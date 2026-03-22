@@ -396,6 +396,25 @@
             transform: scale(1.05);
         }
 
+
+        /* ── Topic badge shown on AI messages ── */
+        .topic-badge {
+            display: inline-block;
+            font-size: 0.55rem;
+            font-family: 'Syne', sans-serif;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.45);
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 20px;
+            padding: 0.15rem 0.5rem;
+            margin-bottom: 0.4rem;
+            display: block;
+            width: fit-content;
+        }
+
         /* ════════════════════════════════════
            CHAT AREA
         ════════════════════════════════════ */
@@ -730,34 +749,7 @@ const WORKER_URL = 'https://divine-hall-7e6a.12thugfk.workers.dev';
    Defines Chris's personality and behaviour.
    Sent as the "system" message on every request.
    ════════════════════════════════════════════════════════ */
-const SYSTEM_PROMPT = `You are Chris — the most passionate, knowledgeable and entertaining movie guide on the internet. You live and breathe cinema, TV, anime, games and books.
-
-YOUR PERSONALITY:
-- Talk like a best friend who has seen EVERYTHING and can't wait to tell you about it
-- Be expressive, hyped, funny — use energy in your words
-- Never be boring or generic — every recommendation comes with PASSION
-- Use emojis as natural accents, not decoration spam
-
-YOUR RESPONSE FORMAT — always structured like this:
-1. Open with a punchy one-liner reaction to what they said (fun, witty, relevant)
-2. Give 2-4 picks grouped under themed emoji headers like:
-   🔥 If you want your mind blown:
-   💀 For pure adrenaline:
-   😭 If you want to ugly cry:
-   ✨ Visually breathtaking:
-   🤯 For something totally different:
-3. Each pick: "Title (Year) — one sentence that sells it perfectly, no fluff"
-4. End with ONE punchy follow-up question that opens a new direction
-
-STRICT RULES:
-- NO markdown links or URLs ever
-- NO asterisks for bold
-- Use plain dashes only
-- Max 180 words
-- If taste tags are given, build the entire response around them
-- If asked about 2025/2026/latest — give the most recent titles you know and be honest if you're unsure
-- Never say "I recommend" or "I suggest" — just name the title and sell it
-- Never repeat the same picks twice in a conversation`;
+const SYSTEM_PROMPT = `You are Chris — a passionate entertainment expert for movies, TV, games, books and anime. Be expressive and helpful.`; // specialist prompts handled by Worker based on topic detection
 
 /* ════════════════════════════════════════════════════════
    TASTE TAGS
@@ -787,7 +779,9 @@ const chatArea  = document.getElementById('chatArea');
 const chatInput = document.getElementById('chatInput');
 const sendBtn   = document.getElementById('sendBtn');
 
-function appendMsg(role, text) {
+const TOPIC_ICONS = { movies: '🎬', games: '🎮', books: '📚' };
+
+function appendMsg(role, text, sources = null) {
     const row = document.createElement('div');
     row.className = `msg-row ${role}`;
     const av = document.createElement('div');
@@ -797,7 +791,19 @@ function appendMsg(role, text) {
         : `<svg width="11" height="11" viewBox="0 0 24 24" fill="rgba(255,255,255,0.6)"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>`;
     const bbl = document.createElement('div');
     bbl.className = `bubble ${role}`;
-    bbl.textContent = text;
+    // Show which AIs contributed
+    if (role === 'ai' && sources && Object.keys(sources).length) {
+        const badge = document.createElement('div');
+        badge.className = 'topic-badge';
+        const icons = [];
+        if (sources.groq)       icons.push('⚡ Groq');
+        if (sources.openrouter) icons.push('🌐 Web');
+        if (sources.nvidia)     icons.push('🖥️ Nvidia');
+        badge.textContent = icons.join(' · ');
+        bbl.appendChild(badge);
+    }
+    const txt = document.createTextNode(text);
+    bbl.appendChild(txt);
     row.appendChild(av); row.appendChild(bbl);
     chatArea.appendChild(row);
     chatArea.scrollTop = chatArea.scrollHeight;
@@ -849,13 +855,14 @@ async function callDeepSeek(prompt) {
     }
 
     const data  = await res.json();
-    const reply = data?.reply || 'No response from Chris.';
+    const reply   = data?.reply   || 'No response from Chris.';
+    const sources = data?.sources || {};
 
     /* Store in history for multi-turn conversation */
     chatHistory.push({ role: 'user',      content: prompt });
     chatHistory.push({ role: 'assistant', content: reply  });
 
-    return reply;
+    return { reply, sources };
 }
 
 /* ── send handler ── */
@@ -872,12 +879,12 @@ async function handleSend() {
     showTyping(); // show instantly before API call
 
     try {
-        const reply = await callDeepSeek(prompt);
+        const { reply, sources } = await callDeepSeek(prompt);
         hideTyping();
-        appendMsg('ai', reply);
+        appendMsg('ai', reply, sources);
     } catch (err) {
         hideTyping();
-        appendMsg('ai', `⚠️ Chris couldn't connect. Make sure the Worker URL is set correctly.`);
+        appendMsg('ai', `⚠️ Chris couldn't connect. Check the Worker is deployed with GROQ_API_KEY set.`);
     } finally {
         isTyping = false; sendBtn.disabled = false;
         chatInput.focus();
