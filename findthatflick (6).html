@@ -395,26 +395,6 @@
             color: #fff;
             transform: scale(1.05);
         }
-
-
-        /* ── Topic badge shown on AI messages ── */
-        .topic-badge {
-            display: inline-block;
-            font-size: 0.55rem;
-            font-family: 'Syne', sans-serif;
-            font-weight: 700;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.45);
-            background: rgba(255,255,255,0.07);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 20px;
-            padding: 0.15rem 0.5rem;
-            margin-bottom: 0.4rem;
-            display: block;
-            width: fit-content;
-        }
-
         /* ════════════════════════════════════
            CHAT AREA
         ════════════════════════════════════ */
@@ -708,7 +688,7 @@
                             <path d="M12 2C12 2 13.5 8 18 9.5C13.5 11 12 17 12 17C12 17 10.5 11 6 9.5C10.5 8 12 2 12 2Z" fill="white"/>
                         </svg>
                     </div>
-                    <div class="bubble ai">Hey! I'm Chris 🎬 Movies, games, books — I know it all. What are you in the mood for tonight?</div>
+                    <div class="bubble ai">Hey! I'm Chris 🎬 Your guide to movies, games, books and more. What are you in the mood for?</div>
                 </div>
             </div>
 
@@ -749,7 +729,7 @@ const WORKER_URL = 'https://divine-hall-7e6a.12thugfk.workers.dev';
    Defines Chris's personality and behaviour.
    Sent as the "system" message on every request.
    ════════════════════════════════════════════════════════ */
-const SYSTEM_PROMPT = `You are Chris — a passionate entertainment expert for movies, TV, games, books and anime. Be expressive and helpful.`; // specialist prompts handled by Worker based on topic detection
+const SYSTEM_PROMPT = `You are Chris — a passionate entertainment expert with access to live movie, game and book databases. You always have current accurate data. Never mention knowledge cutoffs.`;
 
 /* ════════════════════════════════════════════════════════
    TASTE TAGS
@@ -779,31 +759,19 @@ const chatArea  = document.getElementById('chatArea');
 const chatInput = document.getElementById('chatInput');
 const sendBtn   = document.getElementById('sendBtn');
 
-const TOPIC_ICONS = { movies: '🎬', games: '🎮', books: '📚' };
-
-function appendMsg(role, text, sources = null) {
+function appendMsg(role, text) {
     const row = document.createElement('div');
     row.className = `msg-row ${role}`;
-    const av = document.createElement('div');
+    const av  = document.createElement('div');
     av.className = `msg-avatar ${role === 'ai' ? 'ai-av' : 'user-av'}`;
-    av.innerHTML = role === 'ai'
+    av.innerHTML  = role === 'ai'
         ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 13.5 8 18 9.5C13.5 11 12 17 12 17C12 17 10.5 11 6 9.5C10.5 8 12 2 12 2Z" fill="white"/></svg>`
         : `<svg width="11" height="11" viewBox="0 0 24 24" fill="rgba(255,255,255,0.6)"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>`;
     const bbl = document.createElement('div');
     bbl.className = `bubble ${role}`;
-    // Show which AIs contributed
-    if (role === 'ai' && sources && Object.keys(sources).length) {
-        const badge = document.createElement('div');
-        badge.className = 'topic-badge';
-        const icons = [];
-        if (sources.groq) icons.push('⚡ Groq');
-        if (sources.web)  icons.push('🌐 Live Web');
-        badge.textContent = icons.join(' · ');
-        bbl.appendChild(badge);
-    }
-    const txt = document.createTextNode(text);
-    bbl.appendChild(txt);
-    row.appendChild(av); row.appendChild(bbl);
+    bbl.textContent = text;
+    row.appendChild(av);
+    row.appendChild(bbl);
     chatArea.appendChild(row);
     chatArea.scrollTop = chatArea.scrollHeight;
 }
@@ -831,37 +799,49 @@ function hideTyping() { const r = document.getElementById('typingRow'); if (r) r
    Response format: { reply: "..." }
    ════════════════════════════════════════════════════════ */
 async function callDeepSeek(prompt) {
-    /* Keep only last 6 messages (3 exchanges) to avoid rate limits */
+    /* Keep last 6 messages for context */
     const trimmedHistory = chatHistory.slice(-6);
 
-    /* Build full messages array: system prompt + trimmed history + new message */
+    /* Build messages: system + history + new user message */
     const messages = [
         { role: 'system',    content: SYSTEM_PROMPT },
         ...trimmedHistory,
         { role: 'user',      content: prompt }
     ];
 
-    /* Call YOUR Cloudflare Worker — not Groq directly */
-    const res = await fetch(WORKER_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages })
-    });
-
-    if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e?.error || `HTTP ${res.status}`);
+    let res;
+    try {
+        res = await fetch(WORKER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages })
+        });
+    } catch (netErr) {
+        throw new Error('network'); // network failure
     }
 
-    const data  = await res.json();
-    const reply   = data?.reply   || 'No response from Chris.';
-    const sources = data?.sources || {};
+    /* Parse response */
+    let data;
+    try { data = await res.json(); }
+    catch { throw new Error('parse'); }
 
-    /* Store in history for multi-turn conversation */
+    if (!res.ok) {
+        const code = res.status;
+        if (code === 500) throw new Error('config');   // missing API keys
+        if (code === 429) throw new Error('ratelimit');// rate limited
+        if (code === 402) throw new Error('credits');  // needs payment
+        if (code === 503) throw new Error('overload'); // AI overloaded
+        throw new Error(data?.error || `http_${code}`);
+    }
+
+    const reply = data?.reply || '';
+    if (!reply) throw new Error('empty');
+
+    /* Store in history */
     chatHistory.push({ role: 'user',      content: prompt });
     chatHistory.push({ role: 'assistant', content: reply  });
 
-    return { reply, sources };
+    return reply;
 }
 
 /* ── send handler ── */
@@ -878,12 +858,22 @@ async function handleSend() {
     showTyping(); // show instantly before API call
 
     try {
-        const { reply, sources } = await callDeepSeek(prompt);
+        const reply = await callDeepSeek(prompt);
         hideTyping();
-        appendMsg('ai', reply, sources);
+        appendMsg('ai', reply);
     } catch (err) {
         hideTyping();
-        appendMsg('ai', `⚠️ Chris couldn't connect. Check the Worker is deployed with GROQ_API_KEY set.`);
+        const m = err.message;
+        let errorText;
+        if      (m === 'network')   errorText = '📡 No connection — check your internet and try again.';
+        else if (m === 'config')    errorText = '⚙️ Worker not set up — add all API keys in Cloudflare secrets.';
+        else if (m === 'ratelimit') errorText = '⏳ Too many messages! Wait 30 seconds and try again.';
+        else if (m === 'credits')   errorText = '💳 API credits needed — check your OpenRouter balance.';
+        else if (m === 'overload')  errorText = '🔄 AI is busy — try again in a few seconds.';
+        else if (m === 'empty')     errorText = '🤔 Chris got confused — try rephrasing your question.';
+        else if (m === 'parse')     errorText = '⚠️ Got a weird response — try again.';
+        else                        errorText = '⚠️ Something went wrong — try again in a moment.';
+        appendMsg('ai', errorText);
     } finally {
         isTyping = false; sendBtn.disabled = false;
         chatInput.focus();
