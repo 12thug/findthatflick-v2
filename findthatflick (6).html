@@ -730,7 +730,7 @@ const WORKER_URL = 'https://divine-hall-7e6a.12thugfk.workers.dev';
    Defines Chris's personality and behaviour.
    Sent as the "system" message on every request.
    ════════════════════════════════════════════════════════ */
-const SYSTEM_PROMPT = `Chris: movie/TV/game recommender. Be witty, concise. Max 80 words. 1-3 picks per reply with short reason. Use taste tags if given.`;
+const SYSTEM_PROMPT = `You are Chris, a movie and TV recommender. Rules: plain text only, no markdown, no links, no URLs, no asterisks. Max 80 words. Suggest 1-3 titles with a one-line reason each. Factor in any taste tags given.`;
 
 /* ════════════════════════════════════════════════════════
    TASTE TAGS
