@@ -1,1001 +1,170 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FindthatFlick</title>
-    <!-- Popcorn emoji favicon -->
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍿</text></svg>">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+/**
+ * FindthatFlick — Cloudflare Worker (Fast Multi-AI)
+ *
+ * SPEED OPTIMIZATION:
+ * - Groq is primary (fastest, ~0.5s) 
+ * - OpenRouter:online runs in parallel for web data
+ * - Nvidia skipped (too slow) — replaced by Groq as synthesizer
+ * - Total time: ~1.5-2.5s instead of 8-10s
+ *
+ * SECRETS NEEDED:
+ *   GROQ_API_KEY       → console.groq.com
+ *   OPENROUTER_API_KEY → openrouter.ai
+ */
 
-    <style>
-        /* ════════════════════════════════════
-           DESIGN TOKENS
-           All colours defined here as CSS variables.
-           White-based accent system throughout.
-        ════════════════════════════════════ */
-        :root {
-            --bg:             #080810;
-            --card-bg:        rgba(10, 10, 22, 0.48);
-            --card-border:    rgba(255,255,255,0.10);
-            --card-border-h:  rgba(255,255,255,0.22);
-            --text:           #f0f0f8;
-            --muted:          rgba(200,200,220,0.50);
-            --accent:         #ffffff;
-            --accent-soft:    rgba(255,255,255,0.12);
-            --user-bubble:    rgba(255,255,255,0.10);
-            --ai-bubble:      rgba(10,10,22,0.80);
-            --input-bg:       rgba(255,255,255,0.07);
-            --input-border:   rgba(255,255,255,0.12);
-            --divider:        rgba(255,255,255,0.07);
-            --scrollbar:      rgba(255,255,255,0.18);
-            --tag-bg:         rgba(255,255,255,0.07);
-            --tag-border:     rgba(255,255,255,0.18);
-            --tag-active-bg:  rgba(255,255,255,0.20);
-            --tag-active-bdr: rgba(255,255,255,0.72);
-            --send-bg:        #ffffff;
-            --send-txt:       #0a0a18;
-        }
+const GROQ_SPECIALIST = `You are a passionate entertainment expert. 
+Based on the user's message give 2-3 specific picks (movies/shows/games/books).
+Be direct: Title (Year) — one punchy reason. No fluff. No links. No URLs.`;
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+const OPENROUTER_SPECIALIST = `You are an entertainment expert with live web access.
+Search for the most recent/latest relevant titles for the user's request.
+Give 2-3 picks focusing on 2024-2026 releases. Title (Year) — one reason. No links.`;
 
-        html, body {
-            width: 100%; height: 100%;
-            font-family: 'DM Sans', sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            overflow-x: hidden;
-        }
+const CHRIS_PROMPT = `You are Chris — a brilliant, witty, deeply passionate film critic and entertainment guide inside FindthatFlick. You know EVERYTHING about movies, TV, games, books and anime.
 
-        /* ════════════════════════════════════
-           VIDEO BACKGROUND
-           No blur/filter on the iframe itself.
-           Video plays clear. Card has its own blur.
-           Light overlay keeps text readable.
-        ════════════════════════════════════ */
-        .video-bg {
-            position: fixed;
-            inset: 0;
-            z-index: 0;
-            overflow: hidden;
-            background: radial-gradient(ellipse at 20% 40%, #1a0a2e 0%, #080810 55%),
-                        radial-gradient(ellipse at 80% 70%, #0a1a2e 0%, transparent 60%);
-        }
-        .video-bg::after {
-            content: '';
-            position: absolute;
-            inset: 0;
-            z-index: 2;
-            background: rgba(8,8,16,0.38);
-        }
-        .video-bg iframe {
-            position: absolute;
-            top: 50%; left: 50%;
-            width: 100vw;
-            height: 56.25vw;
-            min-height: 100vh;
-            min-width: 177.78vh;
-            transform: translate(-50%, -50%);
-            pointer-events: none;
-            border: 0;
-            z-index: 1;
-        }
+YOUR PERSONALITY:
+- You're like that one friend who has watched everything and makes every recommendation feel like an event
+- You guess moods, ask smart follow-up questions, drop fun trivia, have OPINIONS
+- Sometimes you disagree with popular takes ("Honestly? Oppenheimer was overrated for casual viewing")
+- You remember what was said earlier in the conversation and reference it
+- You're conversational — not just a list machine
+- Use emojis naturally, not excessively
 
-        /* ════════════════════════════════════
-           PAGE LAYOUT
-        ════════════════════════════════════ */
-        .page {
-            position: relative;
-            z-index: 10;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 1.5rem 1.25rem;
-            gap: 1rem;
-        }
+YOUR CONVERSATION STYLE:
+- For greetings/vague messages: Don't dump picks. Instead guess their mood with a fun question OR make a bold movie statement to spark conversation
+- For specific requests: Give picks with PASSION — sell each one like a trailer
+- For "latest/2025/2026": Pull from web search data provided and be upfront about what's newest
+- Act like a film critic: have takes, compare films, explain WHY something is great cinematically
+- Reference directors, cinematography, scores when relevant — make the user feel like they're learning
 
-        .dual-container {
-            display: flex;
-            gap: 1rem;
-            width: 100%;
-            max-width: 1060px;
-            align-items: stretch;
-            overflow: hidden;
-        }
+RESPONSE FORMAT:
+- Short punchy opener (1 line reaction or mood guess)
+- If recommending: 2-4 picks under fun emoji headers 🔥💀😭✨🤯🎮📚
+- Each pick: "Title (Year) — sell it in one irresistible sentence"
+- End: ONE follow-up question OR a bold opinion to spark debate
 
-        /* ════════════════════════════════════
-           GLASSMORPHISM CARD BASE
-           backdrop-filter creates the frosted
-           glass effect over the video.
-        ════════════════════════════════════ */
-        .card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 20px;
-            backdrop-filter: blur(24px) saturate(1.5);
-            -webkit-backdrop-filter: blur(24px) saturate(1.5);
-            transition: border-color 0.3s, box-shadow 0.3s;
-            overflow: hidden;
-            box-shadow: none;
-            min-width: 0;
-        }
-        .card:hover {
-            border-color: var(--card-border-h);
-            box-shadow: none;
-        }
+STRICT RULES:
+- NO markdown links or URLs
+- NO asterisks — plain dashes only  
+- Max 200 words
+- Never say "I recommend" or "I suggest"
+- Never be boring — every reply should make the user want to respond
+- Use taste tags heavily if given
+- Sound like ONE voice — not a summary of other AIs`;
 
-        /* ════════════════════════════════════
-           SEARCH CARD (left, larger)
-           Text centered throughout.
-        ════════════════════════════════════ */
-        .search-card {
-            flex: 0 0 55%;
-            padding: 2.5rem 2.25rem;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-        }
+export default {
+  async fetch(request, env) {
+    const cors = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
 
-        /* ════════════════════════════════════
-           AI CARD (right)
-        ════════════════════════════════════ */
-        .ai-card {
-            flex: 1 1 0;
-            display: flex;
-            flex-direction: column;
-            height: 540px;
-            max-height: 600px;
-            min-height: 0;
-        }
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'POST only' }), { status: 405, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-        /* ── Brand / Header ── */
-        .card-header {
-            margin-bottom: 1.5rem;
-            width: 100%;
-            text-align: center;
-        }
-        .brand {
-            font-family: 'Syne', sans-serif;
-            font-size: clamp(1.4rem, 3vw, 2rem);
-            font-weight: 800;
-            letter-spacing: 0.10em;
-            text-transform: uppercase;
-            color: #fff;
-            display: block;
-            margin-bottom: 0.4rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .card-subtitle {
-            font-size: 0.82rem;
-            color: var(--muted);
-            line-height: 1.55;
-        }
+    const missing = [];
+    if (!env.GROQ_API_KEY)       missing.push('GROQ_API_KEY');
+    if (!env.OPENROUTER_API_KEY) missing.push('OPENROUTER_API_KEY');
+    if (missing.length) return new Response(JSON.stringify({ error: `Missing: ${missing.join(', ')}` }), { status: 500, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-        /* ── Form Fields ── */
-        .field {
-            margin-bottom: 1.1rem;
-            width: 100%;
-            text-align: center;
-        }
-        .field-label {
-            font-family: 'Syne', sans-serif;
-            font-size: 0.62rem;
-            font-weight: 600;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-            color: var(--muted);
-            display: block;
-            margin-bottom: 0.45rem;
-            text-align: center;
-        }
-        .field-select,
-        .field-input {
-            width: 100%;
-            padding: 0.72rem 1rem;
-            background: var(--input-bg);
-            border: 1px solid var(--input-border);
-            border-radius: 10px;
-            color: var(--text);
-            font-family: 'DM Sans', sans-serif;
-            font-size: 0.90rem;
-            transition: border-color 0.2s, box-shadow 0.2s;
-            -webkit-appearance: none;
-            appearance: none;
-            text-align: center;
-        }
-        .field-select {
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='rgba(255,255,255,0.45)' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 1rem center;
-            cursor: pointer;
-        }
-        .field-input {
-            background: rgba(235,238,250,0.93);
-            color: #1a1a2e;
-            font-weight: 500;
-        }
-        .field-input::placeholder { color: rgba(26,26,46,0.38); font-weight: 400; }
-        .field-select:focus, .field-input:focus {
-            outline: none;
-            border-color: rgba(255,255,255,0.65);
-            box-shadow: 0 0 0 3px rgba(255,255,255,0.10);
-        }
-        .field-select option { background: #13131f; color: var(--text); }
+    let body;
+    try { body = await request.json(); }
+    catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } }); }
 
-        /* ── Search Button ── */
-        .search-btn {
-            width: 100%;
-            margin-top: 0.5rem;
-            padding: 0.88rem 1.5rem;
-            background: #fff;
-            color: #0a0a18;
-            border: none;
-            border-radius: 10px;
-            font-family: 'Syne', sans-serif;
-            font-size: 0.78rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            cursor: pointer;
-            transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
-        }
-        .search-btn:hover {
-            background: rgba(255,255,255,0.86);
-            transform: translateY(-1px);
-            box-shadow: 0 6px 22px rgba(0,0,0,0.30);
-        }
-        .search-btn:active { transform: translateY(0); }
+    if (!body.messages?.length) return new Response(JSON.stringify({ error: 'Missing messages' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-        /* ── Recent Searches (red box area) ── */
-        .recent-searches {
-            width: 100%;
-            margin-top: 0.85rem;
-            padding: 0.8rem 1rem;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.10);
-            border-radius: 10px;
-            min-height: 60px;
-        }
-        .recent-label {
-            font-family: 'Syne', sans-serif;
-            font-size: 0.58rem;
-            font-weight: 600;
-            letter-spacing: 0.13em;
-            text-transform: uppercase;
-            color: var(--muted);
-            display: block;
-            margin-bottom: 0.5rem;
-        }
-        .recent-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.35rem;
-        }
-        .recent-empty {
-            font-size: 0.72rem;
-            color: rgba(200,200,220,0.30);
-            font-style: italic;
-        }
-        .recent-chip {
-            padding: 0.2rem 0.6rem;
-            background: rgba(255,255,255,0.07);
-            border: 1px solid rgba(255,255,255,0.14);
-            border-radius: 20px;
-            font-size: 0.70rem;
-            color: rgba(220,220,240,0.75);
-            cursor: pointer;
-            transition: background 0.15s, color 0.15s;
-            user-select: none;
-        }
-        .recent-chip:hover { background: rgba(255,255,255,0.14); color: #fff; }
+    const lastUser = [...body.messages].reverse().find(m => m.role === 'user');
+    const userText = lastUser?.content || '';
+    const history  = body.messages.filter(m => m.role !== 'system').slice(-6);
 
-        /* ── Footer link ── */
-        .search-card-footer {
-            margin-top: auto;
-            padding-top: 1.5rem;
-            width: 100%;
-            text-align: center;
-        }
-        .help-link {
-            font-size: 0.70rem;
-            font-family: 'Syne', sans-serif;
-            letter-spacing: 0.10em;
-            text-transform: uppercase;
-            color: var(--muted);
-            text-decoration: none;
-            transition: color 0.2s;
-        }
-        .help-link:hover { color: rgba(255,255,255,0.75); }
+    // ── STEP 1: Fire Groq + OpenRouter in parallel (fast)
+    const [groqResult, webResult] = await Promise.allSettled([
 
-        /* ════════════════════════════════════
-           AI CARD HEADER
-        ════════════════════════════════════ */
-        .ai-card-header {
-            padding: 1.1rem 1.4rem 0.95rem;
-            border-bottom: 1px solid var(--divider);
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            flex-shrink: 0;
-        }
-        .ai-avatar {
-            width: 36px; height: 36px;
-            background: rgba(255,255,255,0.10);
-            border: 1px solid rgba(255,255,255,0.18);
-            border-radius: 10px;
-            display: flex; align-items: center; justify-content: center;
-            flex-shrink: 0;
-        }
-        .ai-name {
-            font-family: 'Syne', sans-serif;
-            font-size: 0.88rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: #fff;
-        }
-        .ai-tagline {
-            font-size: 0.64rem;
-            font-family: 'Syne', sans-serif;
-            letter-spacing: 0.09em;
-            text-transform: uppercase;
-            color: var(--muted);
-        }
+      // Groq specialist — deep knowledge, very fast
+      fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.GROQ_API_KEY}` },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            { role: 'system', content: GROQ_SPECIALIST },
+            { role: 'user',   content: userText }
+          ],
+          max_tokens: 150,
+          temperature: 0.8,
+        }),
+      }).then(r => r.json()).then(d => d?.choices?.[0]?.message?.content || ''),
 
-        /* ════════════════════════════════════
-           TASTE TAGS
-        ════════════════════════════════════ */
-        .taste-section {
-            padding: 0.7rem 1.4rem 0.6rem;
-            border-bottom: 1px solid var(--divider);
-            flex-shrink: 0;
-        }
-        .taste-label {
-            font-family: 'Syne', sans-serif;
-            font-size: 0.56rem;
-            font-weight: 600;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--muted);
-            margin-bottom: 0.48rem;
-            display: block;
-        }
-        .taste-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.35rem;
-        }
-        .taste-tag {
-            padding: 0.22rem 0.58rem;
-            background: var(--tag-bg);
-            border: 1px solid var(--tag-border);
-            border-radius: 20px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 0.68rem;
-            color: rgba(220,220,240,0.72);
-            cursor: pointer;
-            transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.12s;
-            user-select: none;
-        }
-        .taste-tag:hover {
-            background: rgba(255,255,255,0.14);
-            border-color: rgba(255,255,255,0.40);
-            color: #fff;
-        }
-        .taste-tag.active {
-            background: var(--tag-active-bg);
-            border-color: var(--tag-active-bdr);
-            color: #fff;
-            transform: scale(1.05);
-        }
+      // OpenRouter:online — live web search for latest releases
+      fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+          'HTTP-Referer': 'https://12thug.github.io/findthatflick-v2/',
+          'X-Title': 'FindthatFlick',
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/llama-3.3-70b-instruct:online',
+          messages: [
+            { role: 'system', content: OPENROUTER_SPECIALIST },
+            { role: 'user',   content: userText }
+          ],
+          max_tokens: 150,
+          temperature: 0.8,
+        }),
+      }).then(r => r.json()).then(d => d?.choices?.[0]?.message?.content || ''),
 
+    ]);
 
-        /* ── Topic badge shown on AI messages ── */
-        .topic-badge {
-            display: inline-block;
-            font-size: 0.55rem;
-            font-family: 'Syne', sans-serif;
-            font-weight: 700;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.45);
-            background: rgba(255,255,255,0.07);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 20px;
-            padding: 0.15rem 0.5rem;
-            margin-bottom: 0.4rem;
-            display: block;
-            width: fit-content;
-        }
+    const groqData = groqResult.status === 'fulfilled' ? groqResult.value : '';
+    const webData  = webResult.status  === 'fulfilled' ? webResult.value  : '';
 
-        /* ════════════════════════════════════
-           CHAT AREA
-        ════════════════════════════════════ */
-        .chat-area {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem 1.3rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.85rem;
-            scroll-behavior: smooth;
-            min-height: 0;
-        }
-        .chat-area::-webkit-scrollbar { width: 3px; }
-        .chat-area::-webkit-scrollbar-track { background: transparent; }
-        .chat-area::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+    // ── STEP 2: Chris synthesizes both into one perfect conversational reply
+    const synthMessages = [
+      { role: 'system', content: CHRIS_PROMPT },
+      ...history,
+      {
+        role: 'user',
+        content: `User said: "${userText}"
 
-        .msg-row {
-            display: flex;
-            gap: 0.55rem;
-            align-items: flex-end;
-            animation: fadeUp 0.22s ease both;
-        }
-        @keyframes fadeUp {
-            from { opacity: 0; transform: translateY(6px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-        .msg-row.user { flex-direction: row-reverse; }
+Research from specialists:
+[Deep Knowledge]: ${groqData || 'unavailable'}
+[Latest Web Data]: ${webData  || 'unavailable'}
 
-        .msg-avatar {
-            width: 25px; height: 25px;
-            border-radius: 7px;
-            flex-shrink: 0;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .msg-avatar.ai-av   { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.16); }
-        .msg-avatar.user-av { background: rgba(255,255,255,0.08); }
-
-        .bubble {
-            max-width: 80%;
-            padding: 0.6rem 0.9rem;
-            border-radius: 13px;
-            font-size: 0.84rem;
-            line-height: 1.60;
-        }
-        .bubble.ai {
-            background: var(--ai-bubble);
-            border: 1px solid rgba(255,255,255,0.09);
-            border-bottom-left-radius: 3px;
-        }
-        .bubble.user {
-            background: var(--user-bubble);
-            border: 1px solid rgba(255,255,255,0.16);
-            border-bottom-right-radius: 3px;
-        }
-
-        .typing-indicator { display: flex; gap: 4px; align-items: center; padding: 0.12rem; }
-        .typing-indicator span {
-            width: 5px; height: 5px;
-            background: rgba(255,255,255,0.65);
-            border-radius: 50%;
-            animation: bounce 1.1s infinite;
-        }
-        .typing-indicator span:nth-child(2) { animation-delay: 0.18s; }
-        .typing-indicator span:nth-child(3) { animation-delay: 0.36s; }
-        @keyframes bounce {
-            0%,80%,100% { transform: translateY(0); }
-            40%          { transform: translateY(-5px); }
-        }
-
-        /* ════════════════════════════════════
-           CHAT INPUT BAR
-        ════════════════════════════════════ */
-        .chat-input-area {
-            padding: 0.85rem 1.3rem;
-            border-top: 1px solid var(--divider);
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-            flex-shrink: 0;
-        }
-        .chat-input {
-            flex: 1;
-            background: var(--input-bg);
-            border: 1px solid var(--input-border);
-            border-radius: 9px;
-            padding: 0.58rem 0.9rem;
-            color: var(--text);
-            font-family: 'DM Sans', sans-serif;
-            font-size: 0.83rem;
-            height: 38px;
-            transition: border-color 0.2s, box-shadow 0.2s;
-        }
-        .chat-input::placeholder { color: var(--muted); }
-        .chat-input:focus {
-            outline: none;
-            border-color: rgba(255,255,255,0.50);
-            box-shadow: 0 0 0 3px rgba(255,255,255,0.08);
-        }
-        .send-btn {
-            padding: 0 1.05rem;
-            height: 38px;
-            background: var(--send-bg);
-            color: var(--send-txt);
-            border: none;
-            border-radius: 9px;
-            font-family: 'Syne', sans-serif;
-            font-size: 0.60rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            cursor: pointer;
-            transition: background 0.2s, transform 0.14s, box-shadow 0.2s;
-            white-space: nowrap;
-        }
-        .send-btn:hover {
-            background: rgba(255,255,255,0.84);
-            box-shadow: 0 4px 14px rgba(255,255,255,0.14);
-            transform: translateY(-1px);
-        }
-        .send-btn:active  { transform: translateY(0); }
-        .send-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
-
-        /* ════════════════════════════════════
-           FOOTER
-        ════════════════════════════════════ */
-        .page-footer {
-            font-family: 'Syne', sans-serif;
-            font-size: 0.60rem;
-            font-weight: 600;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.22);
-            text-align: center;
-        }
-
-        /* ════════════════════════════════════
-           RESPONSIVE
-        ════════════════════════════════════ */
-        /* ════════════════════════════════════
-           RESPONSIVE — MOBILE
-           Stack cards vertically.
-           Both cards fully visible & scrollable.
-        ════════════════════════════════════ */
-        @media (max-width: 780px) {
-
-            /* Stack vertically, both cards full width */
-            .dual-container {
-                flex-direction: column;
-                overflow: visible;
-                gap: 1rem;
-            }
-
-            /* Search card — full width, natural height */
-            .search-card {
-                flex: none;
-                width: 100%;
-                height: auto;
-            }
-
-            /* AI card — full width, fixed usable height */
-            .ai-card {
-                flex: none;
-                width: 100%;
-                height: 520px;
-                max-height: 520px;
-                min-height: 420px;
-            }
-
-            /* Tighter page padding on mobile */
-            .page {
-                padding: 1rem 0.75rem;
-                justify-content: flex-start;
-                padding-top: 1.5rem;
-            }
-
-            /* Smaller brand on mobile */
-            .brand { font-size: clamp(1.2rem, 7vw, 1.8rem); }
-
-            /* Smaller taste tags */
-            .taste-tag { font-size: 0.65rem; padding: 0.2rem 0.5rem; }
-
-            /* Tighter chat input */
-            .chat-input-area { padding: 0.7rem 1rem; }
-
-            /* Bubbles don't overflow */
-            .bubble { max-width: 90%; font-size: 0.82rem; }
-        }
-
-        /* Extra small phones */
-        @media (max-width: 400px) {
-            .ai-card { height: 460px; min-height: 380px; }
-            .taste-section { padding: 0.5rem 1rem 0.4rem; }
-        }
-    </style>
-</head>
-<body>
-
-<!-- VIDEO BACKGROUND — no filter/blur, plays crystal clear -->
-<div class="video-bg">
-    <iframe
-        src="https://www.youtube.com/embed/3aAvQxtvKiA?autoplay=1&mute=1&loop=1&playlist=3aAvQxtvKiA&controls=0&rel=0&start=8"
-        frameborder="0"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowfullscreen>
-    </iframe>
-</div>
-
-<!-- MAIN PAGE -->
-<div class="page">
-    <div class="dual-container">
-
-        <!-- ── LEFT: SEARCH CARD ── -->
-        <div class="card search-card">
-            <div class="card-header">
-                <span class="brand">FindthatFlick</span>
-                <p class="card-subtitle">Enter a media name to search on multiple sites.</p>
-            </div>
-
-            <!-- GREEN: Name input first -->
-            <div class="field">
-                <label class="field-label" for="mediaInput">Enter a Name</label>
-                <input type="text" id="mediaInput" placeholder="Fantastic 4" class="field-input" />
-            </div>
-
-            <!-- YELLOW: Category second -->
-            <div class="field">
-                <label class="field-label" for="mediaCategory">Select a Category</label>
-                <select id="mediaCategory" class="field-select">
-                    <option value="movies">Movies</option>
-                    <option value="games">Games</option>
-                    <option value="books">Books</option>
-                    <option value="software">Software</option>
-                </select>
-            </div>
-
-            <button class="search-btn" id="searchBtn">Search All Sites</button>
-
-            <!-- RED: Recent searches -->
-            <div class="recent-searches" id="recentSearches">
-                <span class="recent-label">Recent Searches</span>
-                <div class="recent-list" id="recentList">
-                    <span class="recent-empty">No recent searches yet.</span>
-                </div>
-            </div>
-
-            <div class="search-card-footer">
-                <a class="help-link" href="https://hastebin.com/share/oleliqumus.sql" target="_blank">Cheat sheet / help</a>
-            </div>
-        </div>
-
-        <!-- ── RIGHT: CHRIS AI CARD ── -->
-        <div class="card ai-card">
-
-            <div class="ai-card-header">
-                <div class="ai-avatar">
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
-                        <path d="M12 2C12 2 13.5 8 18 9.5C13.5 11 12 17 12 17C12 17 10.5 11 6 9.5C10.5 8 12 2 12 2Z" fill="white" opacity="0.9"/>
-                        <path d="M19 14C19 14 19.75 17 22 17.75C19.75 18.5 19 21.5 19 21.5C19 21.5 18.25 18.5 16 17.75C18.25 17 19 14 19 14Z" fill="white" opacity="0.5"/>
-                    </svg>
-                </div>
-                <div>
-                    <div class="ai-name">Chris</div>
-                    <div class="ai-tagline">Your Guide to Movie Decisions</div>
-                </div>
-            </div>
-
-            <!-- TASTE TAGS -->
-            <div class="taste-section">
-                <span class="taste-label">Pick your taste — added to every prompt</span>
-                <div class="taste-tags" id="tasteTags">
-                    <span class="taste-tag" data-taste="Action">⚡ Action</span>
-                    <span class="taste-tag" data-taste="Adventure">🗺️ Adventure</span>
-                    <span class="taste-tag" data-taste="Drama">🎭 Drama</span>
-                    <span class="taste-tag" data-taste="Sci-Fi">🚀 Sci-Fi</span>
-                    <span class="taste-tag" data-taste="Horror">👻 Horror</span>
-                    <span class="taste-tag" data-taste="Comedy">😂 Comedy</span>
-                    <span class="taste-tag" data-taste="Thriller">🔪 Thriller</span>
-                    <span class="taste-tag" data-taste="Romance">❤️ Romance</span>
-                    <span class="taste-tag" data-taste="Fantasy">🧙 Fantasy</span>
-                    <span class="taste-tag" data-taste="Mystery">🕵️ Mystery</span>
-                    <span class="taste-tag" data-taste="Anime">🎌 Anime</span>
-                    <span class="taste-tag" data-taste="Visually Stunning">✨ Visually Stunning</span>
-                </div>
-            </div>
-
-            <div class="chat-area" id="chatArea">
-                <div class="msg-row ai">
-                    <div class="msg-avatar ai-av">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                            <path d="M12 2C12 2 13.5 8 18 9.5C13.5 11 12 17 12 17C12 17 10.5 11 6 9.5C10.5 8 12 2 12 2Z" fill="white"/>
-                        </svg>
-                    </div>
-                    <div class="bubble ai">Hey! I'm Chris 🎬 Pick some taste tags above or just tell me what mood you're in — I'll find you something perfect.</div>
-                </div>
-            </div>
-
-            <div class="chat-input-area">
-                <input type="text" class="chat-input" id="chatInput" placeholder="Ask Chris for a recommendation..." />
-                <button class="send-btn" id="sendBtn">Send</button>
-            </div>
-
-        </div>
-    </div>
-    <div class="page-footer">Created by vsx</div>
-</div>
-
-<script>
-
-'use strict';
-
-/* ════════════════════════════════════════════════════════
-   STATE
-   ════════════════════════════════════════════════════════
-   chatHistory: stores conversation for multi-turn context
-   isTyping:    prevents double-sends while Chris is responding
-   activeTastes: set of genre tags the user has selected
-   ════════════════════════════════════════════════════════ */
-let chatHistory  = [];
-let isTyping     = false;
-let activeTastes = new Set();
-
-/* ════════════════════════════════════════════════════════
-   WORKER URL
-   Replace this with YOUR Cloudflare Worker URL after deploy.
-   Format: https://findthatflick.YOURNAME.workers.dev
-   ════════════════════════════════════════════════════════ */
-const WORKER_URL = 'https://divine-hall-7e6a.12thugfk.workers.dev';
-
-/* ════════════════════════════════════════════════════════
-   SYSTEM PROMPT
-   Defines Chris's personality and behaviour.
-   Sent as the "system" message on every request.
-   ════════════════════════════════════════════════════════ */
-const SYSTEM_PROMPT = `You are Chris — a passionate entertainment expert for movies, TV, games, books and anime. Be expressive and helpful.`; // specialist prompts handled by Worker based on topic detection
-
-/* ════════════════════════════════════════════════════════
-   TASTE TAGS
-   Selected tags are silently prepended to every user message.
-   e.g. [My taste preferences: Action, Sci-Fi]\nUser message
-   ════════════════════════════════════════════════════════ */
-document.getElementById('tasteTags').addEventListener('click', e => {
-    const tag = e.target.closest('.taste-tag');
-    if (!tag) return;
-    const t = tag.dataset.taste;
-    if (activeTastes.has(t)) { activeTastes.delete(t); tag.classList.remove('active'); }
-    else                      { activeTastes.add(t);    tag.classList.add('active');    }
-});
-
-function buildPrompt(text) {
-    if (!activeTastes.size) return text;
-    return `[My taste preferences: ${[...activeTastes].join(', ')}]\n${text}`;
-}
-
-/* ════════════════════════════════════════════════════════
-   CHAT HELPERS
-   appendMsg  — adds a message bubble to the chat area
-   showTyping — shows animated 3-dot typing indicator
-   hideTyping — removes the typing indicator
-   ════════════════════════════════════════════════════════ */
-const chatArea  = document.getElementById('chatArea');
-const chatInput = document.getElementById('chatInput');
-const sendBtn   = document.getElementById('sendBtn');
-
-const TOPIC_ICONS = { movies: '🎬', games: '🎮', books: '📚' };
-
-function appendMsg(role, text, sources = null) {
-    const row = document.createElement('div');
-    row.className = `msg-row ${role}`;
-    const av = document.createElement('div');
-    av.className = `msg-avatar ${role === 'ai' ? 'ai-av' : 'user-av'}`;
-    av.innerHTML = role === 'ai'
-        ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 13.5 8 18 9.5C13.5 11 12 17 12 17C12 17 10.5 11 6 9.5C10.5 8 12 2 12 2Z" fill="white"/></svg>`
-        : `<svg width="11" height="11" viewBox="0 0 24 24" fill="rgba(255,255,255,0.6)"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>`;
-    const bbl = document.createElement('div');
-    bbl.className = `bubble ${role}`;
-    // Show which AIs contributed
-    if (role === 'ai' && sources && Object.keys(sources).length) {
-        const badge = document.createElement('div');
-        badge.className = 'topic-badge';
-        const icons = [];
-        if (sources.groq)       icons.push('⚡ Groq');
-        if (sources.openrouter) icons.push('🌐 Web');
-        if (sources.nvidia)     icons.push('🖥️ Nvidia');
-        badge.textContent = icons.join(' · ');
-        bbl.appendChild(badge);
-    }
-    const txt = document.createTextNode(text);
-    bbl.appendChild(txt);
-    row.appendChild(av); row.appendChild(bbl);
-    chatArea.appendChild(row);
-    chatArea.scrollTop = chatArea.scrollHeight;
-}
-
-function showTyping() {
-    const row = document.createElement('div');
-    row.className = 'msg-row ai'; row.id = 'typingRow';
-    const av = document.createElement('div');
-    av.className = 'msg-avatar ai-av';
-    av.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 13.5 8 18 9.5C13.5 11 12 17 12 17C12 17 10.5 11 6 9.5C10.5 8 12 2 12 2Z" fill="white"/></svg>`;
-    const bbl = document.createElement('div');
-    bbl.className = 'bubble ai';
-    bbl.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
-    row.appendChild(av); row.appendChild(bbl);
-    chatArea.appendChild(row);
-    chatArea.scrollTop = chatArea.scrollHeight;
-}
-function hideTyping() { const r = document.getElementById('typingRow'); if (r) r.remove(); }
-
-/* ════════════════════════════════════════════════════════
-   CLOUDFLARE WORKER API CALL
-   Sends the conversation to your Worker proxy.
-   The Worker holds your Groq API key — users never see it.
-   Request format: POST { messages: [...] }
-   Response format: { reply: "..." }
-   ════════════════════════════════════════════════════════ */
-async function callDeepSeek(prompt) {
-    /* Keep only last 6 messages (3 exchanges) to avoid rate limits */
-    const trimmedHistory = chatHistory.slice(-6);
-
-    /* Build full messages array: system prompt + trimmed history + new message */
-    const messages = [
-        { role: 'system',    content: SYSTEM_PROMPT },
-        ...trimmedHistory,
-        { role: 'user',      content: prompt }
+Now respond as Chris — conversational, passionate, natural. Use the research to inform your picks but sound like yourself.`
+      }
     ];
 
-    /* Call YOUR Cloudflare Worker — not Groq directly */
-    const res = await fetch(WORKER_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages })
-    });
-
-    if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e?.error || `HTTP ${res.status}`);
-    }
-
-    const data  = await res.json();
-    const reply   = data?.reply   || 'No response from Chris.';
-    const sources = data?.sources || {};
-
-    /* Store in history for multi-turn conversation */
-    chatHistory.push({ role: 'user',      content: prompt });
-    chatHistory.push({ role: 'assistant', content: reply  });
-
-    return { reply, sources };
-}
-
-/* ── send handler ── */
-async function handleSend() {
-    const text = chatInput.value.trim();
-    if (!text || isTyping) return;
-
-    /* Build prompt with taste tag context */
-    const prompt = buildPrompt(text);
-    chatInput.value = '';
-    chatInput.blur(); // dismiss mobile keyboard immediately
-    appendMsg('user', text);
-    isTyping = true; sendBtn.disabled = true;
-    showTyping(); // show instantly before API call
-
+    let synthRes;
     try {
-        const { reply, sources } = await callDeepSeek(prompt);
-        hideTyping();
-        appendMsg('ai', reply, sources);
+      synthRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.GROQ_API_KEY}` },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: synthMessages,
+          max_tokens: 300,
+          temperature: 1.0,
+          top_p: 0.9,
+        }),
+      });
     } catch (err) {
-        hideTyping();
-        appendMsg('ai', `⚠️ Chris couldn't connect. Check the Worker is deployed with GROQ_API_KEY set.`);
-    } finally {
-        isTyping = false; sendBtn.disabled = false;
-        chatInput.focus();
-    }
-}
-
-sendBtn.addEventListener('click', handleSend);
-chatInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-});
-
-/* ── search (bug-fixed) ── */
-document.getElementById('searchBtn').addEventListener('click', () => {
-    const name = document.getElementById('mediaInput').value.trim();
-    const cat  = document.getElementById('mediaCategory').value;
-    if (!name) { alert('Please enter a name.'); return; }
-
-    console.log(`Searching [${name}] in [${cat}]`);
-    saveRecent(name); // save to recent searches
-
-    const allowed = localStorage.getItem('popupsAllowed');
-    if (allowed === null) {
-        const ok = confirm('This search opens multiple tabs. Allow pop-ups for this site, then click OK.');
-        localStorage.setItem('popupsAllowed', ok ? 'true' : 'false');
-        if (!ok) { alert('Search canceled — enable pop-ups and refresh.'); return; }
-    } else if (allowed === 'false') {
-        alert('Pop-ups are disabled. Enable them for this site and refresh.'); return;
+      return new Response(JSON.stringify({ error: `Synthesizer failed: ${err.message}` }), { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
     }
 
-    const q = encodeURIComponent(name);
-    let urls = [];
+    const synthData = await synthRes.json();
+    if (!synthRes.ok) return new Response(JSON.stringify({ error: synthData?.error?.message || `Error ${synthRes.status}` }), { status: synthRes.status, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-    if (cat === 'movies') {
-        urls = [
-            `https://www.google.com/search?q=(site:psa.wf OR site:pahe.ink OR site:olamovies.blog OR site:vegamovies.gmbh OR site:uhdmovies.tube) "${name}"`,
-            `https://vegamovies.cologne/search.html?q=${q}`,
-            `https://uhdmovies.tube/?s=${q}`,
-            `https://new.katmoviehd.cymru/?s=${q}`,
-            `https://new4.hdhub4u.fo/search.html?q=${q}`,
-            `https://4khdhub.dad/?s=${q}`,
-            `https://psa.wf/?s=${q}`,
-            `https://pahe.ink/?s=${q}`
-        ];
-    } else if (cat === 'games') {
-        urls = [
-            `https://www.google.com/search?q=(site:fitgirl-repacks.site) "${name}"`,
-            `https://fitgirl-repacks.site/?s=${q}`,
-            `https://koyso.to/?keywords=${q}`
-        ];
-    } else if (cat === 'books') {
-        urls = [
-            `https://www.google.com/search?q=(site:libgen.is OR site:z-lib.org OR site:b-ok.cc) "${name}"`,
-            `https://b-ok.cc/s/?q=${q}`,
-            `https://epdf.pub/s/?q=${q}`,
-            `https://libgen.is/search.php?req=${q}`
-        ];
-    } else if (cat === 'software') {
-        urls = [
-            `https://www.google.com/search?q=(site:filehippo.com OR site:softpedia.com OR site:techspot.com) "${name}"`
-        ];
-    }
+    const reply = synthData?.choices?.[0]?.message?.content || 'No response.';
 
-    if (urls.length) urls.forEach(u => window.open(u, '_blank'));
-    else alert('No search sites configured for this category.');
-});
-
-/* ════════════════════════════════════════
-   RECENT SEARCHES
-   Saves last 5 searches to localStorage.
-   Clicking a chip re-populates the input.
-════════════════════════════════════════ */
-const MAX_RECENT = 5;
-
-function getRecent() {
-    try { return JSON.parse(localStorage.getItem('ftf_recent') || '[]'); }
-    catch { return []; }
-}
-
-function saveRecent(name) {
-    let list = getRecent().filter(x => x.toLowerCase() !== name.toLowerCase());
-    list.unshift(name);
-    if (list.length > MAX_RECENT) list = list.slice(0, MAX_RECENT);
-    localStorage.setItem('ftf_recent', JSON.stringify(list));
-    renderRecent();
-}
-
-function renderRecent() {
-    const list = getRecent();
-    const container = document.getElementById('recentList');
-    if (!container) return;
-    if (list.length === 0) {
-        container.innerHTML = '<span class="recent-empty">No recent searches yet.</span>';
-        return;
-    }
-    container.innerHTML = list.map(name =>
-        `<span class="recent-chip" data-name="${name.replace(/"/g,'&quot;')}">${name}</span>`
-    ).join('');
-}
-
-// Clicking a chip fills the input
-document.getElementById('recentList').addEventListener('click', e => {
-    const chip = e.target.closest('.recent-chip');
-    if (!chip) return;
-    document.getElementById('mediaInput').value = chip.dataset.name;
-    document.getElementById('mediaInput').focus();
-});
-
-// Render on load
-renderRecent();
-
-
-</script>
-</body>
-</html>
+    return new Response(
+      JSON.stringify({
+        reply,
+        sources: { groq: !!groqData, web: !!webData }
+      }),
+      { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } }
+    );
+  },
+};
